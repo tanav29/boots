@@ -62,7 +62,7 @@ async function request(messages: ModelMessage[], stream: boolean, signal: AbortS
       provider: { require_parameters: true },
       ...(stream
         ? { stream_options: { include_usage: true } }
-        : { tools: [webSearchTool], tool_choice: "auto", parallel_tool_calls: true }),
+        : { tools: [webSearchTool], tool_choice: "auto" }),
     }),
   });
   if (!response.ok) {
@@ -74,7 +74,9 @@ async function request(messages: ModelMessage[], stream: boolean, signal: AbortS
           ? "OpenRouter needs credits. Add credits to your account and retry."
           : response.status === 429
             ? "The model is busy. Try again shortly."
-            : "The model request failed. Check your OpenRouter model supports tool calling and is available.",
+            : response.status === 404
+              ? "OpenRouter could not find an available provider for this model and request. Check the model ID and provider availability."
+              : "The model request failed. Check your OpenRouter model and try again.",
       502,
     );
   }
