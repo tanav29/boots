@@ -12,21 +12,23 @@ import { useScribe, CommitStrategy } from "@elevenlabs/react";
 import { createParser } from "eventsource-parser";
 import {
   ArrowUp,
-  ArrowUpRight,
   AudioLines,
   Check,
   ChevronRight,
+  Copy,
   Download,
   Globe2,
   History,
   Info,
-  Menu,
-  MessageCircle,
-  Mic,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   Square,
+  SquarePen,
   Trash2,
   Volume2,
   VolumeX,
@@ -35,28 +37,27 @@ import {
 import type { AgentEvent, Conversation, Turn } from "@/lib/types";
 import { SpeechPlayer } from "@/lib/speech-player";
 import { speakable } from "@/lib/voice-text";
+import { voiceErrorMessage } from "@/lib/voice-errors";
 import { Answer, MemoryIndicator } from "./answer";
 import { Brand } from "./brand";
+import { VoiceActivity } from "./voice-activity";
 
 type Config = { chat: boolean; search: boolean; voice: boolean; model: string };
 const suggestions = [
   {
     icon: Globe2,
-    title: "Research something new",
+    title: "Explore a topic",
     text: "Compare CRM tools for a 20-person sales team. Check current pricing and explain your shortlist.",
-    hint: "Current answers, with sources",
   },
   {
     icon: History,
-    title: "Revisit an earlier answer",
+    title: "Pick up a conversation",
     text: "What did I ask you last Tuesday? Is your answer still correct today?",
-    hint: "Pick up an old conversation",
   },
   {
     icon: Search,
     title: "See what’s changed",
     text: "Have any of the tools we discussed changed their pricing or shipped something big since?",
-    hint: "A fresh look at an old shortlist",
   },
 ];
 
@@ -110,12 +111,11 @@ export function Chat() {
       disconnectRef.current();
       submitRef.current(text.trim());
     },
-    onError: () => {
+    onError: (error) => {
       voiceModeRef.current = false;
       setVoiceMode(false);
-      setError(
-        "Could not connect the microphone. Check browser permissions and your ElevenLabs key and credits.",
-      );
+      disconnectRef.current();
+      setError(voiceErrorMessage(error));
     },
   });
   useEffect(() => {
@@ -335,6 +335,25 @@ export function Chat() {
       return;
     voiceStartingRef.current = true;
     try {
+      if (!window.isSecureContext) {
+        throw new Error(
+          "Voice needs a secure connection. Open this app on HTTPS or localhost, then try again.",
+        );
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error(
+          "This browser does not support microphone access. Try Voice in a browser that supports it, or keep typing here.",
+        );
+      }
+      // Avoid opening a provider session when the browser already blocks capture.
+      // Browsers without this Permissions API entry still use Scribe's normal prompt.
+      const permission = await navigator.permissions
+        ?.query({ name: "microphone" as PermissionName })
+        .catch(() => null);
+      if (!voiceModeRef.current) return;
+      if (permission?.state === "denied") {
+        throw new DOMException("Permission denied", "NotAllowedError");
+      }
       await playerRef.current?.unlock();
       const { token } = await jsonRequest<{ token: string }>("/api/voice/token", {
         method: "POST",
@@ -349,7 +368,7 @@ export function Chat() {
     } catch (e) {
       voiceModeRef.current = false;
       setVoiceMode(false);
-      setError(e instanceof Error ? e.message : "Could not start the microphone.");
+      setError(voiceErrorMessage(e));
     } finally {
       voiceStartingRef.current = false;
     }
@@ -451,7 +470,7 @@ export function Chat() {
 
   return (
     <div className="app-shell">
-      <a href="#composer" className="skip-link" inert={settingsOpen}>
+      <a href="#composer" className="skip-link" inert={settingsOpen || sidebarOpen}>
         Skip to message
       </a>
       {sidebarOpen && (
@@ -459,27 +478,41 @@ export function Chat() {
           className="sidebar-scrim"
           aria-label="Close navigation"
           onClick={() => setSidebarOpen(false)}
+          inert={settingsOpen}
         />
       )}
-      <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} inert={settingsOpen}>
-        <button
-          className="wordmark"
-          onClick={newConversation}
-          aria-label="Minimi home"
-          disabled={busy}
-        >
-          <Brand />
-          <span>
-            minimi<span className="brand-period">.</span>
-          </span>
-        </button>
+      <aside
+        id="conversation-sidebar"
+        className={`sidebar ${sidebarOpen ? "is-open" : ""}`}
+        inert={settingsOpen}
+      >
+        <div className="sidebar-heading">
+          <button
+            className="wordmark"
+            onClick={newConversation}
+            aria-label="Minimi home"
+            disabled={busy}
+          >
+            <Brand />
+            <span>
+              minimi<span className="brand-period">.</span>
+            </span>
+          </button>
+          <button
+            className="icon-button sidebar-close"
+            aria-label="Close navigation"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <PanelLeftClose size={18} />
+          </button>
+        </div>
         <button className="new-chat" onClick={newConversation} disabled={busy}>
-          <Plus size={17} />
-          New conversation
+          <SquarePen size={17} />
+          New chat
+          <Plus size={14} />
         </button>
         <div className="sidebar-section">
-          <span>Your conversations</span>
-          <History size={13} />
+          <span>Recent chats</span>
         </div>
         {conversations.length > 4 && (
           <label className="history-search">
@@ -499,7 +532,7 @@ export function Chat() {
               key={conversation.id}
             >
               <button onClick={() => void openConversation(conversation.id)} disabled={busy}>
-                <MessageCircle size={15} />
+                <MessageSquare size={16} />
                 <span>{conversation.title}</span>
               </button>
               <button
@@ -525,9 +558,9 @@ export function Chat() {
           ))}
           {!conversations.length && (
             <div className="history-empty">
-              <MessageCircle size={22} strokeWidth={1.25} />
-              <p>A space for your thoughts.</p>
-              <span>Your conversations will appear here.</span>
+              <MessageSquare size={20} />
+              <p>No conversations yet</p>
+              <span>Start a chat. Find it here later.</span>
             </div>
           )}
           {conversations.length > 0 && !visibleConversations.length && (
@@ -535,25 +568,24 @@ export function Chat() {
           )}
         </nav>
         <div className="sidebar-bottom">
-          <div className="memory-note">
-            <span className="memory-icon">
-              <History size={17} />
-            </span>
-            <div>
-              <strong>A little memory goes a long way.</strong>
-              <p>Past conversations give new questions context.</p>
-            </div>
-          </div>
-          <button className="settings-button" onClick={() => setSettingsOpen(true)}>
+          <button
+            className="settings-button"
+            onClick={() => {
+              setSidebarOpen(false);
+              setSettingsOpen(true);
+            }}
+          >
             <Settings2 size={16} />
-            <span>Settings & connections</span>
+            <span>Settings</span>
             <ChevronRight size={14} />
           </button>
           <div className="local-profile">
-            <span className="avatar">Y</span>
+            <span className="avatar">
+              <ShieldCheck size={17} />
+            </span>
             <div>
               <strong>Your workspace</strong>
-              <small>Saved in this browser’s session</small>
+              <small>Private session</small>
             </div>
             <span className="local-dot" title="Private browser session" />
           </div>
@@ -569,22 +601,24 @@ export function Chat() {
             <button
               className="icon-button mobile-menu"
               aria-label="Open navigation"
+              aria-expanded={sidebarOpen}
+              aria-controls="conversation-sidebar"
               onClick={() => setSidebarOpen(true)}
             >
-              <Menu size={20} />
+              <PanelLeftOpen size={20} />
             </button>
-            <span>{title || "A conversation with context"}</span>
+            <span>{title || "New conversation"}</span>
           </div>
           <div className="topbar-right">
             <span className="web-status">
               <span className={config?.search ? "online-dot" : "offline-dot"} />
               {config?.search ? "Web connected" : "Web search"}
             </span>
-            <span className="topbar-divider" />
             <button
               className={`voice-toggle ${voiceMode ? "enabled" : ""}`}
               onClick={() => void toggleVoice()}
               disabled={loading}
+              aria-pressed={voiceMode}
             >
               <AudioLines size={16} />
               <span>{voiceMode ? "End voice" : "Voice"}</span>
@@ -592,35 +626,186 @@ export function Chat() {
           </div>
         </header>
 
-        <div
-          className="chat-scroll"
-          ref={scrollRef}
-          onScroll={() => {
-            const element = scrollRef.current;
-            if (element)
-              stickRef.current =
-                element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-          }}
-        >
-          <div className={`chat-content ${turns.length ? "has-messages" : "is-empty"}`}>
-            {!turns.length ? (
-              <section className="welcome">
-                <div className="welcome-symbol">
-                  <Brand />
+        <div className={`workspace ${!turns.length ? "is-welcome" : ""}`}>
+          <div
+            className="chat-scroll"
+            ref={scrollRef}
+            onScroll={() => {
+              const element = scrollRef.current;
+              if (element)
+                stickRef.current =
+                  element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+            }}
+          >
+            <div className={`chat-content ${turns.length ? "has-messages" : "is-empty"}`}>
+              {!turns.length ? (
+                <section className="welcome">
+                  <div className="welcome-symbol">
+                    <Brand />
+                  </div>
+                  <h1>{voiceMode ? "Let’s talk." : "What’s on your mind?"}</h1>
+                  <p>
+                    {voiceMode
+                      ? "A little room to think out loud."
+                      : "Fresh ideas. Real answers. A little context goes a long way."}
+                  </p>
+                </section>
+              ) : (
+                <>
+                  <div className="conversation-date">
+                    {new Date(turns[0].createdAt).toLocaleDateString([], {
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </div>
+                  {turns.map((turn, index) => (
+                    <Answer
+                      key={turn.id}
+                      turn={turn}
+                      active={busy && index === turns.length - 1}
+                      status={status}
+                      onSpeak={(text) => void readAloud(text)}
+                      voiceAvailable={Boolean(config?.voice) && !busy}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="composer-area">
+            <div className="composer-container">
+              {memory && busy && <MemoryIndicator count={memory.count} anchors={memory.anchors} />}
+              {error && (
+                <div className="error-notice" role="alert">
+                  <Info size={16} />
+                  <span>{error}</span>
+                  <button aria-label="Dismiss error" onClick={() => setError("")}>
+                    <X size={14} />
+                  </button>
                 </div>
-                <h1>
-                  Pick up where
-                  <br />
-                  you left off.
-                </h1>
-                <p>
-                  New questions. A fresh perspective.
-                  <br />
-                  An assistant that remembers the conversation.
-                </p>
-                <div className="suggestions">
+              )}
+              <form
+                className={`composer ${voiceMode ? "voice-active" : ""}`}
+                onSubmit={handleSubmit}
+              >
+                {voiceMode && (
+                  <VoiceActivity
+                    state={
+                      speaking
+                        ? "speaking"
+                        : busy
+                          ? "thinking"
+                          : listening
+                            ? "listening"
+                            : "connecting"
+                    }
+                    transcript={scribe.partialTranscript}
+                    onInterrupt={() => {
+                      abortRef.current?.abort();
+                      playerRef.current?.stop();
+                    }}
+                    onEnd={stopVoice}
+                  />
+                )}
+                <textarea
+                  ref={textareaRef}
+                  id="composer"
+                  aria-label="Message Minimi"
+                  placeholder={
+                    voiceMode
+                      ? "Or type a message…"
+                      : "Ask anything, or pick up where you left off…"
+                  }
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={handleKey}
+                  rows={1}
+                  maxLength={12000}
+                  disabled={loading}
+                />
+                <div className="composer-toolbar">
+                  <div className="composer-tools">
+                    <span className="research-label">
+                      <Globe2 size={14} />
+                      Web search
+                    </span>
+                    <span className="composer-tool-divider" />
+                    <button
+                      type="button"
+                      className={`composer-audio ${autoSpeak ? "active" : ""}`}
+                      title={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
+                      aria-label={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
+                      aria-pressed={autoSpeak}
+                      onClick={async () => {
+                        if (!config?.voice) {
+                          setSettingsOpen(true);
+                          return;
+                        }
+                        if (!autoSpeak) await playerRef.current?.unlock();
+                        else playerRef.current?.stop();
+                        autoSpeakRef.current = !autoSpeak;
+                        setAutoSpeak(!autoSpeak);
+                      }}
+                    >
+                      {autoSpeak ? <Volume2 size={16} /> : <VolumeX size={16} />}
+                    </button>
+                    {speaking && !voiceMode && (
+                      <button
+                        type="button"
+                        className="stop-speaking"
+                        onClick={() => playerRef.current?.stop()}
+                      >
+                        Stop audio
+                      </button>
+                    )}
+                  </div>
+                  <div className="send-tools">
+                    <button
+                      type="button"
+                      className={`mic-button ${voiceMode ? "active" : ""}`}
+                      aria-label={voiceMode ? "End voice conversation" : "Start voice conversation"}
+                      title="Talk to Minimi"
+                      onClick={() => void toggleVoice()}
+                      disabled={loading}
+                      aria-pressed={voiceMode}
+                    >
+                      <AudioLines size={20} />
+                      <span>{voiceMode ? "End voice" : "Talk"}</span>
+                    </button>
+                    {busy ? (
+                      <button
+                        type="button"
+                        className="send-button"
+                        aria-label="Stop answer"
+                        title="Stop answer"
+                        onClick={() => {
+                          abortRef.current?.abort();
+                          playerRef.current?.stop();
+                        }}
+                      >
+                        <Square size={13} fill="currentColor" />
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="send-button"
+                        disabled={!draft.trim() || loading}
+                        aria-label="Send message"
+                        title="Send message"
+                      >
+                        <ArrowUp size={19} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </form>
+              {!turns.length && !voiceMode && (
+                <div className="suggestions" aria-label="Suggested prompts">
                   {suggestions.map((suggestion) => (
                     <button
+                      type="button"
                       key={suggestion.title}
                       disabled={loading || busy}
                       onClick={() => {
@@ -628,193 +813,18 @@ export function Chat() {
                         textareaRef.current?.focus();
                       }}
                     >
-                      <suggestion.icon size={18} strokeWidth={1.6} />
-                      <span>
-                        <strong>{suggestion.title}</strong>
-                        <small>{suggestion.hint}</small>
-                      </span>
-                      <ArrowUpRight size={15} />
+                      <suggestion.icon size={15} />
+                      <span>{suggestion.title}</span>
                     </button>
                   ))}
                 </div>
-              </section>
-            ) : (
-              <>
-                <div className="conversation-date">
-                  {new Date(turns[0].createdAt).toLocaleDateString([], {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                  })}
-                </div>
-                {turns.map((turn, index) => (
-                  <Answer
-                    key={turn.id}
-                    turn={turn}
-                    active={busy && index === turns.length - 1}
-                    status={status}
-                    onSpeak={(text) => void readAloud(text)}
-                    voiceAvailable={Boolean(config?.voice) && !busy}
-                  />
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="composer-area">
-          <div className="composer-container">
-            {memory && busy && <MemoryIndicator count={memory.count} anchors={memory.anchors} />}
-            {error && (
-              <div className="error-notice" role="alert">
-                <Info size={16} />
-                <span>{error}</span>
-                <button aria-label="Dismiss error" onClick={() => setError("")}>
-                  <X size={14} />
-                </button>
+              )}
+              <div className="composer-footer">
+                <span>Thoughtful answers. Check the sources.</span>
+                <span>
+                  <kbd>⇧</kbd> <kbd>↵</kbd> for a new line
+                </span>
               </div>
-            )}
-            {voiceMode && (
-              <div className="voice-panel">
-                <div
-                  className={`voice-bars ${listening || speaking ? "animated" : ""}`}
-                  aria-hidden="true"
-                >
-                  {[0, 1, 2, 3, 4].map((i) => (
-                    <i key={i} />
-                  ))}
-                </div>
-                <div>
-                  <strong>
-                    {speaking
-                      ? "Minimi is speaking"
-                      : busy
-                        ? "Finding your answer"
-                        : listening
-                          ? "Listening to you"
-                          : "Connecting microphone"}
-                  </strong>
-                  <span>
-                    {listening
-                      ? scribe.partialTranscript || "Speak naturally. I’ll respond when you pause."
-                      : speaking
-                        ? "Only the answer is read aloud."
-                        : "Your conversation continues here."}
-                  </span>
-                </div>
-                {(busy || speaking) && (
-                  <button
-                    onClick={() => {
-                      abortRef.current?.abort();
-                      playerRef.current?.stop();
-                    }}
-                  >
-                    Interrupt
-                  </button>
-                )}
-                <button
-                  className="icon-button"
-                  aria-label="End voice conversation"
-                  onClick={stopVoice}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            )}
-            <form className={`composer ${voiceMode ? "voice-active" : ""}`} onSubmit={handleSubmit}>
-              <textarea
-                ref={textareaRef}
-                id="composer"
-                aria-label="Message Minimi"
-                placeholder={
-                  listening
-                    ? "Listening… or type a message"
-                    : "Ask anything, or pick up a conversation…"
-                }
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={handleKey}
-                rows={1}
-                maxLength={12000}
-                disabled={loading}
-              />
-              <div className="composer-toolbar">
-                <div className="composer-tools">
-                  <span className="research-label">
-                    <Globe2 size={14} />
-                    Web search
-                  </span>
-                  <span className="composer-tool-divider" />
-                  <button
-                    type="button"
-                    className={`composer-audio ${autoSpeak ? "active" : ""}`}
-                    title={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
-                    aria-label={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
-                    aria-pressed={autoSpeak}
-                    onClick={async () => {
-                      if (!config?.voice) {
-                        setSettingsOpen(true);
-                        return;
-                      }
-                      if (!autoSpeak) await playerRef.current?.unlock();
-                      else playerRef.current?.stop();
-                      autoSpeakRef.current = !autoSpeak;
-                      setAutoSpeak(!autoSpeak);
-                    }}
-                  >
-                    {autoSpeak ? <Volume2 size={16} /> : <VolumeX size={16} />}
-                  </button>
-                  {speaking && !voiceMode && (
-                    <button
-                      type="button"
-                      className="stop-speaking"
-                      onClick={() => playerRef.current?.stop()}
-                    >
-                      Stop audio
-                    </button>
-                  )}
-                </div>
-                <div className="send-tools">
-                  <button
-                    type="button"
-                    className={`mic-button ${voiceMode ? "active" : ""}`}
-                    aria-label={voiceMode ? "End voice conversation" : "Start voice conversation"}
-                    title="Talk to Minimi"
-                    onClick={() => void toggleVoice()}
-                    disabled={loading}
-                  >
-                    <Mic size={18} />
-                  </button>
-                  {busy ? (
-                    <button
-                      type="button"
-                      className="send-button"
-                      aria-label="Stop answer"
-                      title="Stop answer"
-                      onClick={() => {
-                        abortRef.current?.abort();
-                        playerRef.current?.stop();
-                      }}
-                    >
-                      <Square size={13} fill="currentColor" />
-                    </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      className="send-button"
-                      disabled={!draft.trim() || loading}
-                      aria-label="Send message"
-                      title="Send message"
-                    >
-                      <ArrowUp size={19} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </form>
-            <div className="composer-footer">
-              <span>Thoughtful answers. Check the sources.</span>
-              <span>Shift + Enter for a new line</span>
             </div>
           </div>
         </div>
@@ -851,7 +861,7 @@ export function Chat() {
           >
             <div className="modal-heading">
               <div>
-                <h2 id="settings-title">A few connections.</h2>
+                <h2 id="settings-title">Settings & connections</h2>
                 <p>Your keys stay on the server.</p>
               </div>
               <button
@@ -912,7 +922,7 @@ export function Chat() {
                   } catch {}
                 }}
               >
-                {copiedSetup ? <Check size={14} /> : <CopyIcon />}{" "}
+                {copiedSetup ? <Check size={14} /> : <Copy size={14} />}{" "}
                 {copiedSetup ? "Copied" : "Copy variable names"}
               </button>
             </div>
@@ -946,22 +956,5 @@ export function Chat() {
         </div>
       )}
     </div>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      aria-hidden="true"
-    >
-      <rect x="8" y="8" width="12" height="12" rx="2" />
-      <path d="M16 8V4H4v12h4" />
-    </svg>
   );
 }
