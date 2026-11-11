@@ -1,54 +1,34 @@
 import { z } from "zod";
+import { tool } from "ai";
 import type { Source } from "@/lib/types";
 import { settings, AppError } from "../config";
 
 export const searchInput = z
   .object({
-    query: z.string().trim().min(2).max(500),
-    start_date: z.iso.date().optional(),
-    end_date: z.iso.date().optional(),
+    query: z
+      .string()
+      .trim()
+      .min(2)
+      .max(500)
+      .describe("A focused query naming the entity and what to verify."),
+    start_date: z.iso.date().optional().describe("Inclusive publication date YYYY-MM-DD."),
+    end_date: z.iso.date().optional().describe("Inclusive end publication date YYYY-MM-DD."),
     domains: z
       .array(z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i))
       .max(4)
-      .optional(),
+      .optional()
+      .describe("Official domain restrictions, e.g. neon.tech. Max 4."),
   })
   .refine((input) => !input.start_date || !input.end_date || input.start_date <= input.end_date, {
     message: "start_date must not be after end_date",
   });
 export type SearchInput = z.infer<typeof searchInput>;
 
-export const webSearchTool = {
-  type: "function" as const,
-  function: {
-    name: "web_search",
-    description:
-      "Search the public web. Call several times in parallel for independent entities. Retrieves source passages and URLs. Dates filter publication dates and can miss undated pricing pages: check current pricing WITHOUT date filters, then search dated release notes separately. Prefer official domains. This is your only tool.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "A focused search query, naming the specific entity and what to verify.",
-        },
-        start_date: {
-          type: "string",
-          description: "Optional inclusive publication date YYYY-MM-DD.",
-        },
-        end_date: {
-          type: "string",
-          description: "Optional inclusive end publication date YYYY-MM-DD.",
-        },
-        domains: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional official domain restriction, e.g. neon.tech. Max 4.",
-        },
-      },
-      required: ["query"],
-      additionalProperties: false,
-    },
-  },
-};
+export const webSearchTool = tool({
+  description:
+    "Search the public web. Call several times in parallel for independent entities. Retrieves source passages and URLs. Dates filter publication dates and can miss undated pricing pages: check current pricing WITHOUT date filters, then search dated release notes separately. Prefer official domains. This is your only tool.",
+  inputSchema: searchInput,
+});
 
 const resultSchema = z.object({
   results: z.array(

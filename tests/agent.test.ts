@@ -4,7 +4,24 @@ import { Store } from "../src/server/store";
 import { runAgent } from "../src/server/agent";
 import { AppError } from "../src/server/config";
 import type { AgentEvent } from "../src/lib/types";
-import type { ModelMessage } from "../src/server/providers/openrouter";
+import type { ModelMessage } from "ai";
+import type { ResearchResult } from "../src/server/providers/openrouter";
+
+function planned(text: string, toolCalls: ResearchResult["toolCalls"] = []): ResearchResult {
+  return {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text },
+          ...toolCalls.map((call) => ({ type: "tool-call" as const, ...call })),
+        ],
+      },
+    ],
+    toolCalls,
+    usage: { inputTokens: 10, outputTokens: 5 },
+  };
+}
 
 test("research is private; final answer streams and speaks; one failed search preserves other evidence", async () => {
   const db = new Store(":memory:");
@@ -25,34 +42,21 @@ test("research is private; final answer streams and speaks; one failed search pr
       emit: (e) => events.push(e),
     },
     {
-      research: async () => ({
-        message:
-          ++researchCalls === 1
-            ? {
-                role: "assistant",
-                content: "PRIVATE RESEARCH",
-                tool_calls: [
-                  {
-                    id: "one",
-                    type: "function",
-                    function: {
-                      name: "web_search",
-                      arguments: '{"query":"Neon official pricing"}',
-                    },
-                  },
-                  {
-                    id: "two",
-                    type: "function",
-                    function: {
-                      name: "web_search",
-                      arguments: '{"query":"Supabase official pricing"}',
-                    },
-                  },
-                ],
-              }
-            : { role: "assistant", content: "READY" },
-        usage: { prompt_tokens: 10, completion_tokens: 5 },
-      }),
+      research: async () =>
+        ++researchCalls === 1
+          ? planned("PRIVATE RESEARCH", [
+              {
+                toolCallId: "one",
+                toolName: "web_search",
+                input: { query: "Neon official pricing" },
+              },
+              {
+                toolCallId: "two",
+                toolName: "web_search",
+                input: { query: "Supabase official pricing" },
+              },
+            ])
+          : planned("READY"),
       search: async (input) => {
         peak = Math.max(peak, ++concurrent);
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -100,10 +104,7 @@ test("cancellation persists a partial answer and never continues speaking", asyn
   await runAgent(
     { owner: "a", turn, db, timezone: "UTC", signal: abort.signal, emit: (e) => events.push(e) },
     {
-      research: async () => ({
-        message: { role: "assistant", content: "READY" },
-        usage: undefined,
-      }),
+      research: async () => planned("READY"),
       search: async () => {
         throw new Error("Unexpected search");
       },
@@ -132,20 +133,8 @@ test("unknown tools cannot execute and the search loop is bounded", async () => 
   await runAgent(
     { owner: "a", turn, db, timezone: "UTC", signal: new AbortController().signal, emit: () => {} },
     {
-      research: async () => ({
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [
-            {
-              id: String(++calls),
-              type: "function",
-              function: { name: "execute_shell", arguments: "{}" },
-            },
-          ],
-        },
-        usage: undefined,
-      }),
+      research: async () =>
+        planned("", [{ toolCallId: String(++calls), toolName: "execute_shell", input: {} }]),
       search: async () => {
         searches++;
         return [];

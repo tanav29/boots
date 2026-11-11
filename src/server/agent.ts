@@ -1,5 +1,6 @@
 import type { AgentEvent, RunMetrics, SearchActivity, Source, Turn } from "@/lib/types";
-import { research, answer, type ModelMessage, type Usage } from "./providers/openrouter";
+import type { ModelMessage } from "ai";
+import { research, answer, type Usage } from "./providers/openrouter";
 import { webSearch, searchInput, type SearchInput } from "./providers/search";
 import { type Store } from "./store";
 import { clockContext, resolveDates } from "./time";
@@ -35,8 +36,8 @@ export async function runAgent(
   const sources: Source[] = [];
   const searches: SearchActivity[] = [];
   const addUsage = (usage?: Usage) => {
-    metrics.inputTokens += usage?.prompt_tokens || 0;
-    metrics.outputTokens += usage?.completion_tokens || 0;
+    metrics.inputTokens += usage?.inputTokens || 0;
+    metrics.outputTokens += usage?.outputTokens || 0;
   };
   let text = "";
   let status: Turn["status"] = "complete";
@@ -153,14 +154,14 @@ export async function runAgent(
       metrics.modelCalls++;
       const result = await deps.research(working, signal);
       addUsage(result.usage);
-      const calls = result.message.tool_calls;
+      const calls = result.toolCalls;
       if (!calls?.length) break;
       if (calls.length > 12)
         throw new AppError(
           "The model requested too many searches at once. Please try a narrower question.",
           502,
         );
-      working.push(result.message);
+      working.push(...result.messages);
       const jobs: {
         call: (typeof calls)[number];
         parsed?: SearchInput;
@@ -171,8 +172,8 @@ export async function runAgent(
         let parsed: SearchInput | undefined;
         let error: string | undefined;
         try {
-          if (call.function.name !== "web_search") throw new Error("Only web_search is available.");
-          parsed = searchInput.parse(JSON.parse(call.function.arguments));
+          if (call.toolName !== "web_search") throw new Error("Only web_search is available.");
+          parsed = searchInput.parse(call.input);
           const key = JSON.stringify(parsed);
           if (seen.has(key))
             throw new Error(
@@ -189,7 +190,9 @@ export async function runAgent(
               : "Invalid search arguments. Use query and optional YYYY-MM-DD dates and domains.";
         }
         const activity: SearchActivity | undefined =
-          parsed && !error ? { id: call.id, query: parsed.query, status: "searching" } : undefined;
+          parsed && !error
+            ? { id: call.toolCallId, query: parsed.query, status: "searching" }
+            : undefined;
         if (activity) {
           searches.push(activity);
           emit({ type: "search", activity: { ...activity } });
@@ -229,14 +232,23 @@ export async function runAgent(
         });
         working.push({
           role: "tool",
-          tool_call_id: result.job.call.id,
-          content: JSON.stringify({
-            query: result.job.parsed?.query,
-            error: result.error,
-            results: sources
-              .filter((s) => ids.includes(s.id))
-              .map((s) => ({ ...s, content: s.content.slice(0, 3200) })),
-          }),
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: result.job.call.toolCallId,
+              toolName: result.job.call.toolName,
+              output: {
+                type: "json",
+                value: {
+                  query: result.job.parsed?.query,
+                  error: result.error,
+                  results: sources
+                    .filter((s) => ids.includes(s.id))
+                    .map((s) => ({ ...s, content: s.content.slice(0, 3200) })),
+                },
+              },
+            },
+          ],
         });
       }
       emit({ type: "sources", sources: [...sources] });

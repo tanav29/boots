@@ -1,87 +1,102 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties } from "react";
-import { AudioLines, CornerDownLeft, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
 type VoiceState = "connecting" | "listening" | "thinking" | "speaking";
-
+const quiet = Array<number>(20).fill(0);
 const labels: Record<VoiceState, string> = {
-  connecting: "Connecting microphone…",
-  listening: "Listening to you",
-  thinking: "Thinking it through…",
-  speaking: "Minimi is speaking",
+  connecting: "Connecting…",
+  listening: "Listening",
+  thinking: "Thinking…",
+  speaking: "Speaking",
 };
-
-// A stable pattern avoids random server/client markup and keeps motion gentle.
-const bars = Array.from({ length: 48 }, (_, index) => {
-  const envelope = Math.sin(((index + 0.5) / 48) * Math.PI);
-  return {
-    "--bar-height": `${8 + envelope * (12 + Math.abs(Math.sin(index * 1.9)) * 30)}px`,
-    "--bar-delay": `${-(index * 0.13)}s`,
-    "--bar-duration": `${0.65 + (index % 7) * 0.09}s`,
-  } as CSSProperties;
-});
 
 export function VoiceActivity({
   state,
   transcript,
-  onInterrupt,
-  onEnd,
+  getTrack,
 }: {
   state: VoiceState;
   transcript: string;
-  onInterrupt: () => void;
-  onEnd: () => void;
+  getTrack: () => MediaStreamTrack | undefined;
 }) {
-  const [seconds, setSeconds] = useState(0);
+  const [wave, setWave] = useState({ levels: quiet, active: false });
+  const listening = state === "listening";
 
   useEffect(() => {
-    const startedAt = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    if (!listening) return;
+    let track: MediaStreamTrack | undefined;
+    let context: AudioContext | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let analyser: AnalyserNode | undefined;
+    const samples = new Float32Array(256);
+    let levels = [...quiet];
+    let lastSpeech = 0;
+    const cleanup = () => {
+      clearInterval(timer);
+      source?.disconnect();
+      analyser?.disconnect();
+      void context?.close().catch(() => {});
+      // The transcription SDK owns this track; never stop it here.
+    };
+    const timer = setInterval(() => {
+      if (!analyser) {
+        // Scribe may report connected just before exposing its capture track.
+        track = getTrack();
+        if (!track || track.readyState !== "live") return;
+        try {
+          const sampleRate = track.getSettings().sampleRate;
+          context = new AudioContext(sampleRate ? { sampleRate } : undefined);
+          source = context.createMediaStreamSource(new MediaStream([track]));
+          analyser = context.createAnalyser();
+          analyser.fftSize = samples.length;
+          source.connect(analyser);
+          void context.resume().catch(() => {});
+        } catch {
+          // A visualisation failure must not interrupt transcription.
+          cleanup();
+          return;
+        }
+      }
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(
+        samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length,
+      );
+      const level = track?.enabled ? Math.min(1, Math.max(0, (rms - 0.006) * 14)) : 0;
+      if (level > 0.05) lastSpeech = Date.now();
+      levels = [...levels.slice(1), level];
+      setWave({ levels, active: Date.now() - lastSpeech < 350 });
+    }, 50);
 
+    return cleanup;
+  }, [listening, getTrack]);
+
+  const active = listening && wave.active;
   return (
-    <div className={`voice-activity is-${state}`}>
-      <div className="voice-activity-heading">
-        <span className="voice-session-label">
-          <AudioLines size={16} /> Voice conversation
-        </span>
-        <span className="voice-timer" role="timer" aria-label="Voice session duration">
-          {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-        </span>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="End voice conversation"
-          title="End voice conversation"
-          onClick={onEnd}
-        >
-          <X size={17} />
-        </button>
-      </div>
-      <div className="voice-waveform" aria-hidden="true">
-        {bars.map((style, index) => (
-          <span key={index} style={style} />
-        ))}
-      </div>
-      <p className="voice-state" role="status">
-        {labels[state]}
-      </p>
-      <p className="voice-transcript">
-        {state === "listening"
-          ? transcript || "Take your time. I’ll respond when you pause."
-          : state === "speaking"
-            ? "Have something to add? You can interrupt."
-            : state === "thinking"
-              ? "Your answer is on its way."
-              : "Your microphone will be ready in a moment."}
-      </p>
-      {(state === "thinking" || state === "speaking") && (
-        <button type="button" className="voice-interrupt" onClick={onInterrupt}>
-          <CornerDownLeft size={14} /> Interrupt
-        </button>
-      )}
+    <div className="flex min-h-9 min-w-0 flex-1 items-center gap-3 self-center px-2">
+      <span className="min-w-0 flex-1 truncate text-sm text-zinc-500" role="status">
+        {listening && transcript ? transcript : labels[state]}
+      </span>
+      <svg
+        viewBox="0 0 100 24"
+        className={`h-6 shrink-0 motion-safe:transition-[width] motion-safe:duration-200 ${active ? "w-24 text-violet-600" : "w-10 text-zinc-400"}`}
+        aria-hidden="true"
+      >
+        {(listening ? wave.levels : quiet).map((level, index) => {
+          const height = 2 + level * 20;
+          return (
+            <rect
+              key={index}
+              x={index * 5 + 1}
+              y={(24 - height) / 2}
+              width="2"
+              height={height}
+              rx="1"
+              fill="currentColor"
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }

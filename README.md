@@ -2,7 +2,7 @@
 
 A Next.js chat agent built around a difficult question: **“Is what you told me last week still true?”**
 
-It remembers exact dated conversations, researches the live web through one tool, and gives cited answers. OpenRouter runs the model. ElevenLabs provides live microphone transcription and streamed spoken responses. The UI keeps research activity separate from the answer; only answer text is spoken.
+It remembers exact dated conversations, researches the live web through one tool, and gives cited answers. The Vercel AI SDK runs model calls through its OpenRouter provider. ElevenLabs provides live microphone transcription and streamed spoken responses. The UI keeps research activity separate from the answer; only answer text is spoken.
 
 ## Run
 
@@ -36,7 +36,7 @@ All keys are server-side. Missing keys produce actionable errors, never fabricat
 2. Start a new conversation and ask: “Which five did we shortlist, and why?” Memory crosses conversations in the same browser session.
 3. Ask: “Has any pricing or major feature changed since that answer? Tell me what you can actually verify.”
 4. Turn on **Voice**, speak, and pause. Scribe transcribes live; the model researches; ElevenLabs starts reading answer sentences as they arrive. The microphone reconnects after playback for the next turn. **Interrupt** stops the answer/audio and returns to listening. This is deliberate turn-taking, with tap-to-interrupt, rather than full-duplex echo-sensitive audio.
-5. The speaker toggle reads typed replies too. Individual answers can also be read aloud.
+5. Enable **Read replies aloud** in Settings to hear typed replies too. Individual answers can also be read aloud. Voice stays inside the compact composer; its waveform expands with microphone activity.
 
 The agent can only recall conversations actually saved in this installation and browser session. On a fresh installation, “What did I ask on 3 November?” should produce an honest missing-history response. The deterministic tests seed historical records to exercise those cases without waiting a week.
 
@@ -47,8 +47,8 @@ src/server/agent.ts                 Bounded research loop and streamed answer or
 src/server/store.ts                 SQLite, FTS5, ownership, run leases, exact turn/source persistence
 src/server/time.ts                  User-timezone calendar dates and daylight-saving boundaries
 src/server/prompts.ts               Evidence, history, and temporal comparison policy
-src/server/providers/openrouter.ts  Typed OpenRouter adapter and SSE parser
-src/server/providers/search.ts      The sole tool: Exa web_search
+src/server/providers/openrouter.ts  AI SDK generateText/streamText with the OpenRouter provider
+src/server/providers/search.ts      AI SDK tool definition and Exa web_search implementation
 src/lib/voice-text.ts                Public-text filtering and speech segmentation
 src/app/api/                        Small validated HTTP route handlers
 src/lib/speech-player.ts             Incremental PCM playback, scheduling, cancellation
@@ -58,6 +58,10 @@ scripts/live-eval.ts                Opt-in real-provider temporal evaluation
 ```
 
 See [DESIGN.md](DESIGN.md) for decisions, tradeoffs, and next steps.
+
+The interface uses Tailwind utilities directly in its components. `globals.css` contains only the Tailwind import.
+
+Research uses `generateText` with a Zod-backed `web_search` tool. The server executes searches in its bounded worker pool and returns AI SDK tool-result messages to the model, preserving private provider reasoning metadata between research rounds. The final answer uses `streamText` without tools and forwards only text deltas and usage into the app's SSE protocol for chat and voice. Existing environment variables and saved conversations work unchanged.
 
 ## Verification
 
@@ -80,6 +84,7 @@ An unguessable, HttpOnly, SameSite cookie scopes history to a browser. This is a
 
 ## Provider references
 
+- [AI SDK text generation](https://ai-sdk.dev/docs/ai-sdk-core/generating-text), [tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling), and [OpenRouter provider](https://github.com/OpenRouterTeam/ai-sdk-provider)
 - [OpenRouter tool calling](https://openrouter.ai/docs/guides/features/tool-calling), [streaming](https://openrouter.ai/docs/api/reference/streaming), and [reasoning exclusion](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
 - [Exa Search](https://exa.ai/docs/reference/search)
 - [ElevenLabs realtime Scribe](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/client-side-streaming), [single-use tokens](https://elevenlabs.io/docs/api-reference/tokens/create), and [streamed speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream)

@@ -13,25 +13,14 @@ import { createParser } from "eventsource-parser";
 import {
   ArrowUp,
   AudioLines,
-  Check,
-  ChevronRight,
-  Copy,
   Download,
-  Globe2,
-  History,
-  Info,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Search,
   Settings2,
-  ShieldCheck,
   Square,
-  SquarePen,
   Trash2,
-  Volume2,
-  VolumeX,
   X,
 } from "lucide-react";
 import type { AgentEvent, Conversation, Turn } from "@/lib/types";
@@ -45,17 +34,14 @@ import { VoiceActivity } from "./voice-activity";
 type Config = { chat: boolean; search: boolean; voice: boolean; model: string };
 const suggestions = [
   {
-    icon: Globe2,
     title: "Explore a topic",
     text: "Compare CRM tools for a 20-person sales team. Check current pricing and explain your shortlist.",
   },
   {
-    icon: History,
     title: "Pick up a conversation",
     text: "What did I ask you last Tuesday? Is your answer still correct today?",
   },
   {
-    icon: Search,
     title: "See what’s changed",
     text: "Have any of the tools we discussed changed their pricing or shipped something big since?",
   },
@@ -88,7 +74,6 @@ export function Chat() {
     count: number;
     anchors: { text: string; date: string }[];
   } | null>(null);
-  const [copiedSetup, setCopiedSetup] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const playerRef = useRef<SpeechPlayer | null>(null);
   const busyRef = useRef(false);
@@ -121,6 +106,26 @@ export function Chat() {
   useEffect(() => {
     disconnectRef.current = scribe.disconnect;
   }, [scribe.disconnect]);
+
+  // Share Scribe's capture track; its current API has no public input-level getter.
+  const { getConnection } = scribe;
+  const getInputTrack = useCallback(() => getConnection()?._mediaStreamTrack, [getConnection]);
+
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 768px)");
+    const closeSidebar = () => {
+      if (desktop.matches) setSidebarOpen(false);
+    };
+    desktop.addEventListener("change", closeSidebar);
+    return () => desktop.removeEventListener("change", closeSidebar);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    document.querySelector<HTMLButtonElement>("#conversation-sidebar button")?.focus();
+    return () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="Open navigation"]')?.focus();
+  }, [sidebarOpen]);
 
   const refresh = useCallback(async () => {
     const data = await jsonRequest<{ conversations: Conversation[]; config: Config }>(
@@ -170,14 +175,6 @@ export function Chat() {
     const element = scrollRef.current;
     if (element && turns.length && stickRef.current) element.scrollTop = element.scrollHeight;
   }, [turns, status, memory]);
-
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (element) {
-      element.style.height = "auto";
-      element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
-    }
-  }, [draft]);
 
   const submit = useCallback(
     async (raw: string) => {
@@ -469,80 +466,92 @@ export function Chat() {
   );
 
   return (
-    <div className="app-shell">
-      <a href="#composer" className="skip-link" inert={settingsOpen || sidebarOpen}>
+    <div className="flex h-dvh overflow-hidden">
+      <a
+        href="#composer"
+        className="sr-only z-50 rounded-lg bg-zinc-900 p-3 text-white focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+      >
         Skip to message
       </a>
       {sidebarOpen && (
         <button
-          className="sidebar-scrim"
+          className="fixed inset-0 z-20 bg-black/15 md:hidden"
           aria-label="Close navigation"
           onClick={() => setSidebarOpen(false)}
-          inert={settingsOpen}
         />
       )}
       <aside
         id="conversation-sidebar"
-        className={`sidebar ${sidebarOpen ? "is-open" : ""}`}
-        inert={settingsOpen}
+        aria-label="Chat history"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setSidebarOpen(false);
+        }}
+        className={
+          "fixed inset-y-0 left-0 z-30 flex w-56 shrink-0 flex-col border-r border-zinc-100 bg-zinc-50 p-3 transition-transform motion-reduce:transition-none md:static md:translate-x-0 " +
+          (sidebarOpen ? "translate-x-0" : "-translate-x-full max-md:invisible")
+        }
       >
-        <div className="sidebar-heading">
+        <div className="mb-6 flex h-10 items-center justify-between px-1">
           <button
-            className="wordmark"
-            onClick={newConversation}
+            className="flex items-center gap-1.5 text-lg font-semibold tracking-tight"
             aria-label="Minimi home"
             disabled={busy}
+            onClick={newConversation}
           >
-            <Brand />
-            <span>
-              minimi<span className="brand-period">.</span>
-            </span>
+            <Brand /> minimi
           </button>
           <button
-            className="icon-button sidebar-close"
+            className={iconButton + " md:hidden"}
             aria-label="Close navigation"
             onClick={() => setSidebarOpen(false)}
           >
             <PanelLeftClose size={18} />
           </button>
         </div>
-        <button className="new-chat" onClick={newConversation} disabled={busy}>
-          <SquarePen size={17} />
-          New chat
-          <Plus size={14} />
+        <button
+          className="mb-6 flex h-10 items-center gap-2 rounded-lg px-3 text-left hover:bg-zinc-200/50"
+          onClick={newConversation}
+          disabled={busy}
+        >
+          <Plus size={17} /> New chat
         </button>
-        <div className="sidebar-section">
-          <span>Recent chats</span>
-        </div>
         {conversations.length > 4 && (
-          <label className="history-search">
+          <label className="mb-3 flex items-center gap-2 px-3 text-zinc-500">
             <Search size={14} />
             <input
+              className="min-w-0 flex-1 bg-transparent py-1 text-xs text-zinc-700 outline-none"
               aria-label="Search conversations"
-              placeholder="Find a conversation"
+              placeholder="Search chats"
               value={historyQuery}
               onChange={(e) => setHistoryQuery(e.target.value)}
             />
           </label>
         )}
-        <nav className="conversation-list" aria-label="Conversations">
+        <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto" aria-label="Conversations">
           {visibleConversations.map((conversation) => (
             <div
-              className={`conversation-row ${conversation.id === conversationId ? "selected" : ""}`}
               key={conversation.id}
+              className={
+                "group flex items-center rounded-lg hover:bg-zinc-200/50 " +
+                (conversation.id === conversationId ? "bg-zinc-200/60" : "")
+              }
             >
-              <button onClick={() => void openConversation(conversation.id)} disabled={busy}>
-                <MessageSquare size={16} />
-                <span>{conversation.title}</span>
+              <button
+                className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-[13px] text-zinc-600"
+                onClick={() => void openConversation(conversation.id)}
+                disabled={busy}
+                aria-current={conversation.id === conversationId ? "page" : undefined}
+              >
+                {conversation.title}
               </button>
               <button
-                className="delete-chat"
+                className="mr-1 flex size-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-200 hover:text-zinc-700 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
                 title="Delete conversation"
-                aria-label={`Delete ${conversation.title}`}
+                aria-label={"Delete " + conversation.title}
                 disabled={busy}
                 onClick={async () => {
                   try {
-                    await jsonRequest(`/api/conversations/${conversation.id}`, {
+                    await jsonRequest("/api/conversations/" + conversation.id, {
                       method: "DELETE",
                     });
                     if (conversation.id === conversationId) newConversation();
@@ -557,167 +566,119 @@ export function Chat() {
             </div>
           ))}
           {!conversations.length && (
-            <div className="history-empty">
-              <MessageSquare size={20} />
-              <p>No conversations yet</p>
-              <span>Start a chat. Find it here later.</span>
-            </div>
+            <p className="px-3 text-xs text-zinc-500">Your chats will appear here.</p>
           )}
-          {conversations.length > 0 && !visibleConversations.length && (
-            <p className="muted small">No matching conversations.</p>
+          {!!conversations.length && !visibleConversations.length && (
+            <p className="px-3 text-xs text-zinc-500">No matching chats.</p>
           )}
         </nav>
-        <div className="sidebar-bottom">
-          <button
-            className="settings-button"
-            onClick={() => {
-              setSidebarOpen(false);
-              setSettingsOpen(true);
-            }}
-          >
-            <Settings2 size={16} />
-            <span>Settings</span>
-            <ChevronRight size={14} />
-          </button>
-          <div className="local-profile">
-            <span className="avatar">
-              <ShieldCheck size={17} />
-            </span>
-            <div>
-              <strong>Your workspace</strong>
-              <small>Private session</small>
-            </div>
-            <span className="local-dot" title="Private browser session" />
-          </div>
-        </div>
+        <button
+          className="mt-3 flex h-10 items-center gap-2 rounded-lg px-3 text-[13px] text-zinc-500 hover:bg-zinc-200/50"
+          onClick={() => {
+            setSidebarOpen(false);
+            setSettingsOpen(true);
+          }}
+        >
+          <Settings2 size={16} /> Settings
+        </button>
       </aside>
-
-      <main className="main" inert={settingsOpen}>
-        {turns.length > 0 && (
-          <h1 className="sr-only">{title || "Your conversation with Minimi"}</h1>
-        )}
-        <header className="topbar">
-          <div className="topbar-left">
-            <button
-              className="icon-button mobile-menu"
-              aria-label="Open navigation"
-              aria-expanded={sidebarOpen}
-              aria-controls="conversation-sidebar"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <PanelLeftOpen size={20} />
-            </button>
-            <span>{title || "New conversation"}</span>
-          </div>
-          <div className="topbar-right">
-            <span className="web-status">
-              <span className={config?.search ? "online-dot" : "offline-dot"} />
-              {config?.search ? "Web connected" : "Web search"}
-            </span>
-            <button
-              className={`voice-toggle ${voiceMode ? "enabled" : ""}`}
-              onClick={() => void toggleVoice()}
-              disabled={loading}
-              aria-pressed={voiceMode}
-            >
-              <AudioLines size={16} />
-              <span>{voiceMode ? "End voice" : "Voice"}</span>
-            </button>
-          </div>
-        </header>
-
-        <div className={`workspace ${!turns.length ? "is-welcome" : ""}`}>
-          <div
-            className="chat-scroll"
-            ref={scrollRef}
-            onScroll={() => {
-              const element = scrollRef.current;
-              if (element)
-                stickRef.current =
-                  element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-            }}
+      <main className="flex min-w-0 flex-1 flex-col" inert={sidebarOpen}>
+        <header className="flex h-14 shrink-0 items-center gap-2 px-4 sm:px-6">
+          <button
+            className={iconButton + " md:hidden"}
+            aria-label="Open navigation"
+            aria-expanded={sidebarOpen}
+            aria-controls="conversation-sidebar"
+            onClick={() => setSidebarOpen(true)}
           >
-            <div className={`chat-content ${turns.length ? "has-messages" : "is-empty"}`}>
-              {!turns.length ? (
-                <section className="welcome">
-                  <div className="welcome-symbol">
-                    <Brand />
-                  </div>
-                  <h1>{voiceMode ? "Let’s talk." : "What’s on your mind?"}</h1>
-                  <p>
-                    {voiceMode
-                      ? "A little room to think out loud."
-                      : "Fresh ideas. Real answers. A little context goes a long way."}
-                  </p>
-                </section>
-              ) : (
-                <>
-                  <div className="conversation-date">
-                    {new Date(turns[0].createdAt).toLocaleDateString([], {
-                      month: "long",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
-                  </div>
-                  {turns.map((turn, index) => (
-                    <Answer
-                      key={turn.id}
-                      turn={turn}
-                      active={busy && index === turns.length - 1}
-                      status={status}
-                      onSpeak={(text) => void readAloud(text)}
-                      voiceAvailable={Boolean(config?.voice) && !busy}
-                    />
-                  ))}
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="composer-area">
-            <div className="composer-container">
-              {memory && busy && <MemoryIndicator count={memory.count} anchors={memory.anchors} />}
-              {error && (
-                <div className="error-notice" role="alert">
-                  <Info size={16} />
-                  <span>{error}</span>
-                  <button aria-label="Dismiss error" onClick={() => setError("")}>
-                    <X size={14} />
-                  </button>
-                </div>
-              )}
-              <form
-                className={`composer ${voiceMode ? "voice-active" : ""}`}
-                onSubmit={handleSubmit}
-              >
-                {voiceMode && (
-                  <VoiceActivity
-                    state={
-                      speaking
-                        ? "speaking"
-                        : busy
-                          ? "thinking"
-                          : listening
-                            ? "listening"
-                            : "connecting"
-                    }
-                    transcript={scribe.partialTranscript}
-                    onInterrupt={() => {
-                      abortRef.current?.abort();
-                      playerRef.current?.stop();
-                    }}
-                    onEnd={stopVoice}
+            <PanelLeftOpen size={18} />
+          </button>
+          <span className="truncate text-xs text-zinc-500">{title || "New conversation"}</span>
+        </header>
+        <div
+          className={
+            "flex min-h-0 flex-1 flex-col " + (!turns.length ? "justify-center pb-[12dvh]" : "")
+          }
+        >
+          {turns.length ? (
+            <div
+              ref={scrollRef}
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+              onScroll={() => {
+                const element = scrollRef.current;
+                if (element)
+                  stickRef.current =
+                    element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+              }}
+            >
+              <h1 className="sr-only">{title || "Your conversation with Minimi"}</h1>
+              <div className="mx-auto w-full max-w-2xl space-y-10 px-5 pt-6 pb-10 sm:px-8">
+                {turns.map((turn, index) => (
+                  <Answer
+                    key={turn.id}
+                    turn={turn}
+                    active={busy && index === turns.length - 1}
+                    status={status}
+                    onSpeak={(text) => void readAloud(text)}
+                    voiceAvailable={Boolean(config?.voice) && !busy}
                   />
-                )}
+                ))}
+              </div>
+            </div>
+          ) : (
+            <h1 className="mb-7 px-6 text-center text-[26px] font-medium tracking-tight text-zinc-800 sm:text-3xl">
+              What’s on your mind?
+            </h1>
+          )}
+          <div
+            className={
+              "mx-auto w-full max-w-2xl shrink-0 px-4 sm:px-8 " +
+              (turns.length ? "pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]" : "")
+            }
+          >
+            {memory && busy && <MemoryIndicator count={memory.count} anchors={memory.anchors} />}
+            {error && (
+              <div
+                className="mb-3 flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700"
+                role="alert"
+              >
+                <span className="min-w-0 flex-1">{error}</span>
+                <button
+                  className="shrink-0 p-0.5"
+                  aria-label="Dismiss error"
+                  onClick={() => setError("")}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            <form
+              id="composer"
+              tabIndex={-1}
+              className="flex min-h-14 items-end gap-1 rounded-2xl border border-zinc-200 bg-white p-2 shadow-xs transition-[border-color,box-shadow] focus-within:border-zinc-300 focus-within:shadow-sm motion-reduce:transition-none"
+              onSubmit={handleSubmit}
+              aria-label="Message composer"
+            >
+              {voiceMode ? (
+                <VoiceActivity
+                  state={
+                    speaking
+                      ? "speaking"
+                      : busy
+                        ? "thinking"
+                        : listening
+                          ? "listening"
+                          : "connecting"
+                  }
+                  transcript={scribe.partialTranscript}
+                  getTrack={getInputTrack}
+                />
+              ) : (
                 <textarea
                   ref={textareaRef}
-                  id="composer"
+                  className="field-sizing-content max-h-36 min-h-9 min-w-0 flex-1 resize-none self-center bg-transparent px-2 py-1.5 text-base leading-6 placeholder:text-zinc-500 focus-visible:outline-none sm:text-sm"
                   aria-label="Message Minimi"
-                  placeholder={
-                    voiceMode
-                      ? "Or type a message…"
-                      : "Ask anything, or pick up where you left off…"
-                  }
+                  placeholder="Ask anything…"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={handleKey}
@@ -725,236 +686,183 @@ export function Chat() {
                   maxLength={12000}
                   disabled={loading}
                 />
-                <div className="composer-toolbar">
-                  <div className="composer-tools">
-                    <span className="research-label">
-                      <Globe2 size={14} />
-                      Web search
-                    </span>
-                    <span className="composer-tool-divider" />
-                    <button
-                      type="button"
-                      className={`composer-audio ${autoSpeak ? "active" : ""}`}
-                      title={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
-                      aria-label={autoSpeak ? "Turn off spoken answers" : "Read answers aloud"}
-                      aria-pressed={autoSpeak}
-                      onClick={async () => {
-                        if (!config?.voice) {
-                          setSettingsOpen(true);
-                          return;
-                        }
-                        if (!autoSpeak) await playerRef.current?.unlock();
-                        else playerRef.current?.stop();
-                        autoSpeakRef.current = !autoSpeak;
-                        setAutoSpeak(!autoSpeak);
-                      }}
-                    >
-                      {autoSpeak ? <Volume2 size={16} /> : <VolumeX size={16} />}
-                    </button>
-                    {speaking && !voiceMode && (
-                      <button
-                        type="button"
-                        className="stop-speaking"
-                        onClick={() => playerRef.current?.stop()}
-                      >
-                        Stop audio
-                      </button>
-                    )}
-                  </div>
-                  <div className="send-tools">
-                    <button
-                      type="button"
-                      className={`mic-button ${voiceMode ? "active" : ""}`}
-                      aria-label={voiceMode ? "End voice conversation" : "Start voice conversation"}
-                      title="Talk to Minimi"
-                      onClick={() => void toggleVoice()}
-                      disabled={loading}
-                      aria-pressed={voiceMode}
-                    >
-                      <AudioLines size={20} />
-                      <span>{voiceMode ? "End voice" : "Talk"}</span>
-                    </button>
-                    {busy ? (
-                      <button
-                        type="button"
-                        className="send-button"
-                        aria-label="Stop answer"
-                        title="Stop answer"
-                        onClick={() => {
-                          abortRef.current?.abort();
-                          playerRef.current?.stop();
-                        }}
-                      >
-                        <Square size={13} fill="currentColor" />
-                      </button>
-                    ) : (
-                      <button
-                        type="submit"
-                        className="send-button"
-                        disabled={!draft.trim() || loading}
-                        aria-label="Send message"
-                        title="Send message"
-                      >
-                        <ArrowUp size={19} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </form>
-              {!turns.length && !voiceMode && (
-                <div className="suggestions" aria-label="Suggested prompts">
-                  {suggestions.map((suggestion) => (
-                    <button
-                      type="button"
-                      key={suggestion.title}
-                      disabled={loading || busy}
-                      onClick={() => {
-                        setDraft(suggestion.text);
-                        textareaRef.current?.focus();
-                      }}
-                    >
-                      <suggestion.icon size={15} />
-                      <span>{suggestion.title}</span>
-                    </button>
-                  ))}
-                </div>
               )}
-              <div className="composer-footer">
-                <span>Thoughtful answers. Check the sources.</span>
-                <span>
-                  <kbd>⇧</kbd> <kbd>↵</kbd> for a new line
-                </span>
+              <button
+                type="button"
+                className={iconButton + (voiceMode ? " bg-zinc-100 text-zinc-800" : "")}
+                aria-label={voiceMode ? "End voice conversation" : "Start voice conversation"}
+                title={voiceMode ? "End voice" : "Talk to Minimi"}
+                aria-pressed={voiceMode}
+                onClick={() => void toggleVoice()}
+                disabled={loading}
+              >
+                {voiceMode ? <X size={18} /> : <AudioLines size={19} />}
+              </button>
+              {busy || speaking ? (
+                <button
+                  type="button"
+                  className={
+                    iconButton + " bg-zinc-800 text-white hover:bg-zinc-700 hover:text-white"
+                  }
+                  aria-label={busy ? "Stop answer" : "Stop audio"}
+                  title={voiceMode ? "Interrupt" : "Stop"}
+                  onClick={() => {
+                    abortRef.current?.abort();
+                    playerRef.current?.stop();
+                  }}
+                >
+                  <Square size={12} fill="currentColor" />
+                </button>
+              ) : (
+                !voiceMode && (
+                  <button
+                    type="submit"
+                    className={
+                      iconButton +
+                      " bg-zinc-800 text-white hover:bg-zinc-700 hover:text-white disabled:bg-zinc-100 disabled:text-zinc-500 disabled:opacity-100"
+                    }
+                    disabled={!draft.trim() || loading}
+                    aria-label="Send message"
+                    title="Send message"
+                  >
+                    <ArrowUp size={18} />
+                  </button>
+                )
+              )}
+            </form>
+            {!turns.length && (
+              <div
+                className={
+                  "mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 " +
+                  (voiceMode ? "invisible" : "")
+                }
+                inert={voiceMode}
+                aria-label="Suggested prompts"
+              >
+                {suggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion.title}
+                    className="py-1 text-xs text-zinc-500 hover:text-zinc-700"
+                    disabled={loading || busy}
+                    onClick={() => {
+                      setDraft(suggestion.text);
+                      textareaRef.current?.focus();
+                    }}
+                  >
+                    {suggestion.title}
+                  </button>
+                ))}
               </div>
-            </div>
+            )}
           </div>
         </div>
       </main>
-
       {settingsOpen && (
-        <div
-          className="modal-overlay"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setSettingsOpen(false);
+        <Settings
+          config={config}
+          turns={turns}
+          autoSpeak={autoSpeak}
+          onClose={() => setSettingsOpen(false)}
+          onAutoSpeak={async () => {
+            if (!autoSpeak) await playerRef.current?.unlock();
+            else playerRef.current?.stop();
+            autoSpeakRef.current = !autoSpeak;
+            setAutoSpeak(!autoSpeak);
           }}
-        >
-          <section
-            className="settings-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="settings-title"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setSettingsOpen(false);
-              if (e.key === "Tab") {
-                const buttons =
-                  e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
-                const first = buttons[0];
-                const last = buttons[buttons.length - 1];
-                if (e.shiftKey && document.activeElement === first) {
-                  e.preventDefault();
-                  last?.focus();
-                } else if (!e.shiftKey && document.activeElement === last) {
-                  e.preventDefault();
-                  first?.focus();
-                }
-              }
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2 id="settings-title">Settings & connections</h2>
-                <p>Your keys stay on the server.</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Close settings"
-                autoFocus
-                onClick={() => setSettingsOpen(false)}
-              >
-                <X size={19} />
-              </button>
-            </div>
-            <div className="connection-list">
-              {[
-                {
-                  name: "OpenRouter",
-                  detail: config?.model || "The language model",
-                  ready: config?.chat,
-                },
-                {
-                  name: "Exa",
-                  detail: "Live web search & source passages",
-                  ready: config?.search,
-                },
-                {
-                  name: "ElevenLabs",
-                  detail: "Live transcription & spoken answers",
-                  ready: config?.voice,
-                },
-              ].map((connection) => (
-                <div key={connection.name}>
-                  <span className={`connection-icon ${connection.ready ? "ready" : ""}`}>
-                    {connection.ready ? <Check size={16} /> : <Plus size={16} />}
-                  </span>
-                  <span>
-                    <strong>{connection.name}</strong>
-                    <small>{connection.detail}</small>
-                  </span>
-                  <span className="connection-state">
-                    {connection.ready ? "Configured" : "Key needed"}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="setup-instructions">
-              <strong>Set up your workspace</strong>
-              <p>
-                Copy <code>.env.example</code> to <code>.env</code>, add your API keys, then restart
-                the app.
-              </p>
-              <button
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(
-                      "OPENROUTER_API_KEY=\nEXA_API_KEY=\nELEVENLABS_API_KEY=",
-                    );
-                    setCopiedSetup(true);
-                    setTimeout(() => setCopiedSetup(false), 2000);
-                  } catch {}
-                }}
-              >
-                {copiedSetup ? <Check size={14} /> : <Copy size={14} />}{" "}
-                {copiedSetup ? "Copied" : "Copy variable names"}
-              </button>
-            </div>
-            <div className="privacy-note">
-              <History size={17} />
-              <p>
-                Conversation history is stored locally on this server and scoped to your browser
-                session. Relevant context is sent to OpenRouter; searches go to Exa; voice goes to
-                ElevenLabs. Deleting a conversation removes it from memory.
-              </p>
-            </div>
-            {turns.length > 0 && (
-              <button
-                className="export-button"
-                onClick={() => {
-                  const url = URL.createObjectURL(
-                    new Blob([JSON.stringify(turns, null, 2)], { type: "application/json" }),
-                  );
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "minimi-conversation.json";
-                  a.click();
-                  setTimeout(() => URL.revokeObjectURL(url), 1000);
-                }}
-              >
-                <Download size={15} />
-                Export this conversation
-              </button>
-            )}
-          </section>
-        </div>
+        />
       )}
     </div>
+  );
+}
+
+const iconButton =
+  "flex size-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700";
+
+function Settings({
+  config,
+  turns,
+  autoSpeak,
+  onClose,
+  onAutoSpeak,
+}: {
+  config: Config | null;
+  turns: Turn[];
+  autoSpeak: boolean;
+  onClose: () => void;
+  onAutoSpeak: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    dialogRef.current?.showModal();
+  }, []);
+  return (
+    <dialog
+      aria-labelledby="settings-title"
+      ref={dialogRef}
+      onClose={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      className="fixed m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 text-sm text-zinc-700 shadow-xl backdrop:bg-black/20"
+    >
+      <div onClick={(event) => event.stopPropagation()}>
+        <div className="mb-6 flex items-center justify-between">
+          <h2 className="font-medium" id="settings-title">
+            Settings
+          </h2>
+          <button className={iconButton} aria-label="Close settings" onClick={onClose} autoFocus>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="space-y-4">
+          {[
+            { name: "Chat", ready: config?.chat },
+            { name: "Web search", ready: config?.search },
+            { name: "Voice", ready: config?.voice },
+          ].map(({ name, ready }) => (
+            <div key={name} className="flex items-center justify-between text-xs">
+              <span>{name}</span>
+              <span className={ready ? "text-zinc-500" : "text-amber-700"}>
+                {ready ? "Connected" : "Not configured"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {(!config?.chat || !config?.search || !config?.voice) && (
+          <p className="mt-5 text-xs leading-5 text-zinc-500">
+            Add your API keys to <code className="text-zinc-600">.env</code> using{" "}
+            <code className="text-zinc-600">.env.example</code>, then restart the app.
+          </p>
+        )}
+        <label className="mt-6 flex items-center justify-between border-t border-zinc-100 pt-5 text-xs">
+          Read replies aloud
+          <input
+            type="checkbox"
+            className="size-3.5 accent-violet-600"
+            checked={autoSpeak}
+            disabled={!config?.voice}
+            onChange={onAutoSpeak}
+          />
+        </label>
+        {turns.length > 0 && (
+          <button
+            className="mt-5 flex items-center gap-2 text-xs text-zinc-500 hover:text-zinc-800"
+            onClick={() => {
+              const url = URL.createObjectURL(
+                new Blob([JSON.stringify(turns, null, 2)], { type: "application/json" }),
+              );
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = "minimi-conversation.json";
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}
+          >
+            <Download size={14} /> Export conversation
+          </button>
+        )}
+      </div>
+    </dialog>
   );
 }

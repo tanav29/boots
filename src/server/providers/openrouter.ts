@@ -1,170 +1,128 @@
-import { createParser } from "eventsource-parser";
-import { z } from "zod";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import {
+  APICallError,
+  generateText,
+  streamText,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type ToolCallPart,
+} from "ai";
 import { settings, AppError } from "../config";
 import { webSearchTool } from "./search";
 
-export type ToolCall = {
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
+export type Usage = Pick<LanguageModelUsage, "inputTokens" | "outputTokens">;
+export type ResearchResult = {
+  messages: ModelMessage[];
+  toolCalls: Pick<ToolCallPart, "toolCallId" | "toolName" | "input">[];
+  usage?: Usage;
 };
-export type ModelMessage = {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-  reasoning_details?: unknown[];
-};
-export type Usage = { prompt_tokens?: number; completion_tokens?: number };
-const completion = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-          tool_calls: z
-            .array(
-              z.object({
-                id: z.string(),
-                type: z.literal("function"),
-                function: z.object({ name: z.string(), arguments: z.string().max(12000) }),
-              }),
-            )
-            .optional(),
-          reasoning_details: z.array(z.unknown()).optional(),
-        }),
-      }),
-    )
-    .min(1),
-  usage: z
-    .object({ prompt_tokens: z.number().optional(), completion_tokens: z.number().optional() })
-    .optional(),
-});
 
-async function request(messages: ModelMessage[], stream: boolean, signal: AbortSignal) {
+function requestOptions(messages: ModelMessage[], streaming: boolean, signal: AbortSignal) {
   const config = settings();
   if (!config.openrouterKey)
     throw new AppError("Add OPENROUTER_API_KEY to .env and restart to start chatting.", 503);
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
-    headers: {
-      Authorization: `Bearer ${config.openrouterKey}`,
-      "Content-Type": "application/json",
-      "X-OpenRouter-Title": "Minimi",
-    },
-    body: JSON.stringify({
-      model: stream ? config.model : config.researchModel,
-      messages,
-      stream,
-      max_tokens: stream ? 6000 : 3000,
-      reasoning: { effort: "low", exclude: true },
-      provider: { require_parameters: true },
-      ...(stream
-        ? { stream_options: { include_usage: true } }
-        : { tools: [webSearchTool], tool_choice: "auto" }),
-    }),
+  const openrouter = createOpenRouter({
+    apiKey: config.openrouterKey,
+    headers: { "X-OpenRouter-Title": "Minimi" },
   });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new AppError(
-      response.status === 401
-        ? "OpenRouter rejected its API key. Check OPENROUTER_API_KEY."
-        : response.status === 402
-          ? "OpenRouter needs credits. Add credits to your account and retry."
-          : response.status === 429
-            ? "The model is busy. Try again shortly."
-            : response.status === 404
-              ? "OpenRouter could not find an available provider for this model and request. Check the model ID and provider availability."
+  return {
+    model: openrouter(streaming ? config.model : config.researchModel),
+    // AI SDK 7 accepts trusted system messages through instructions.
+    instructions: messages.filter((message) => message.role === "system"),
+    messages: messages.filter((message) => message.role !== "system"),
+    abortSignal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
+    maxOutputTokens: streaming ? 6000 : 3000,
+    // Keep retries explicit so the research budget and request deadline stay predictable.
+    maxRetries: 0,
+    providerOptions: {
+      openrouter: {
+        reasoning: { effort: "low", exclude: true },
+        provider: { require_parameters: true },
+      },
+    },
+  };
+}
+
+function modelError(error: unknown, streaming: boolean): Error {
+  if (error instanceof AppError) return error;
+  if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) return error;
+  const status = APICallError.isInstance(error) ? error.statusCode : undefined;
+  return new AppError(
+    status === 401
+      ? "OpenRouter rejected its API key. Check OPENROUTER_API_KEY."
+      : status === 402
+        ? "OpenRouter needs credits. Add credits to your account and retry."
+        : status === 429
+          ? "The model is busy. Try again shortly."
+          : status === 404
+            ? "OpenRouter could not find an available provider for this model and request. Check the model ID and provider availability."
+            : streaming
+              ? "The model connection failed while answering. Please retry."
               : "The model request failed. Check your OpenRouter model and try again.",
-      502,
-    );
-  }
-  return response;
+    502,
+  );
 }
 
 export async function research(
   messages: ModelMessage[],
   signal: AbortSignal,
-): Promise<{ message: ModelMessage; usage?: Usage }> {
-  const response = await request(messages, false, signal);
-  const data = completion.safeParse(await response.json());
-  if (!data.success)
-    throw new AppError("The model returned an unexpected response. Please retry.", 502);
-  return {
-    message: {
-      role: "assistant" as const,
-      content: data.data.choices[0].message.content || null,
-      tool_calls: data.data.choices[0].message.tool_calls,
-      // Some reasoning models require their opaque signed state on the next tool turn.
-      // It stays server-side, never stored in memory, streamed, or sent to speech.
-      reasoning_details: data.data.choices[0].message.reasoning_details,
-    },
-    usage: data.data.usage,
-  };
-}
-
-export async function* parseModelStream(
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<{ text?: string; usage?: Usage }> {
-  const pending: { text?: string; usage?: Usage }[] = [];
-  let finished = false;
-  let failure: AppError | undefined;
-  const parser = createParser({
-    onEvent(event) {
-      if (event.data === "[DONE]") {
-        finished = true;
-        return;
-      }
-      try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-          failure = new AppError("The model connection failed while answering. Please retry.", 502);
-          return;
-        }
-        const choice = data.choices?.[0];
-        if (choice?.finish_reason === "error" || choice?.finish_reason === "length") {
-          failure = new AppError(
-            choice.finish_reason === "length"
-              ? "The answer reached the response limit. Ask me to continue."
-              : "The model stopped unexpectedly. Please retry.",
-            502,
-          );
-        }
-        // Deliberately ignore reasoning, reasoning_details, tool_calls and all other deltas.
-        if (typeof choice?.delta?.content === "string")
-          pending.push({ text: choice.delta.content });
-        if (data.usage) pending.push({ usage: data.usage });
-      } catch {
-        failure = new AppError("The model sent an invalid stream. Please retry.", 502);
-      }
-    },
-  });
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
+): Promise<ResearchResult> {
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        parser.feed(decoder.decode());
-        break;
-      }
-      parser.feed(decoder.decode(value, { stream: true }));
-      while (pending.length) yield pending.shift()!;
-      if (failure) throw failure;
-    }
-    while (pending.length) yield pending.shift()!;
-    if (failure) throw failure;
-    if (!finished)
-      throw new AppError("The connection ended before the answer finished. Please retry.", 502);
-  } finally {
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    const result = await generateText({
+      ...requestOptions(messages, false, signal),
+      // Execution stays in the bounded worker pool in runAgent.
+      tools: { web_search: webSearchTool },
+      toolChoice: "auto",
+    });
+    if (result.finishReason === "length")
+      throw new AppError("The research reached the response limit. Please try again.", 502);
+    if (!["stop", "tool-calls"].includes(result.finishReason))
+      throw new AppError("The model stopped unexpectedly. Please retry.", 502);
+    return {
+      // Preserve opaque provider reasoning metadata for subsequent tool turns.
+      // These messages stay server-side and are never persisted or spoken.
+      // The SDK may synthesize error results for invalid calls. runAgent owns all
+      // tool results, including validation errors, so retain only assistant turns.
+      messages: result.response.messages.filter((message) => message.role === "assistant"),
+      toolCalls: result.toolCalls,
+      usage: result.usage,
+    };
+  } catch (error) {
+    signal.throwIfAborted();
+    throw modelError(error, false);
   }
 }
 
-export async function* answer(messages: ModelMessage[], signal: AbortSignal) {
-  const response = await request(messages, true, signal);
-  if (!response.body) throw new AppError("The model returned an empty response.", 502);
-  yield* parseModelStream(response.body);
+export async function* answer(
+  messages: ModelMessage[],
+  signal: AbortSignal,
+): AsyncGenerator<{ text?: string; usage?: Usage }> {
+  try {
+    const result = streamText({
+      ...requestOptions(messages, true, signal),
+      onError: () => {}, // Errors are sanitized below before entering the public event stream.
+    });
+    let finished = false;
+    for await (const part of result.fullStream) {
+      signal.throwIfAborted();
+      if (part.type === "text-delta") yield { text: part.text };
+      else if (part.type === "error") throw part.error;
+      else if (part.type === "abort")
+        throw new DOMException("The model request was interrupted.", "AbortError");
+      else if (part.type === "finish") {
+        yield { usage: part.totalUsage };
+        if (part.finishReason === "length")
+          throw new AppError("The answer reached the response limit. Ask me to continue.", 502);
+        if (part.finishReason !== "stop")
+          throw new AppError("The connection ended before the answer finished. Please retry.", 502);
+        finished = true;
+      }
+      // Reasoning, tools, and provider metadata never enter the answer/voice channel.
+    }
+    if (!finished)
+      throw new AppError("The connection ended before the answer finished. Please retry.", 502);
+  } catch (error) {
+    signal.throwIfAborted();
+    throw modelError(error, true);
+  }
 }

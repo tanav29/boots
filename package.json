@@ -19,6 +19,8 @@
   "dependencies": {
     "@elevenlabs/react": "^1.21.1",
     "@js-temporal/polyfill": "^0.5.1",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
+    "ai": "^7.0.169",
     "chrono-node": "^2.10.3",
     "eventsource-parser": "^3.0.6",
     "lucide-react": "^0.577.0",
@@ -35,12 +37,15 @@
     }
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "eslint": "^9.39.0",
     "eslint-config-next": "^16.4.6",
+    "postcss": "^8.5.32",
     "prettier": "^3.9.10",
+    "tailwindcss": "^4.3.5",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
